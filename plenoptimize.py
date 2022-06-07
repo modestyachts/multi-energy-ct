@@ -458,6 +458,7 @@ def main():
             if automatic_lr:
                 FLAGS.lr_rgb = 150 * (FLAGS.resolution ** 1.75)
                 FLAGS.lr_sigma = 51.5 * (FLAGS.resolution ** 2.37)
+                
             if FLAGS.physical_batch_size is not None:
                 # Recompute all the training rays at the new resolution and shuffle them
                 rays = np.stack([get_rays_np(H, W, focal, p) for p in train_c2w[:,:3,:4]], 0) # [N, ro+rd, H, W, 3]
