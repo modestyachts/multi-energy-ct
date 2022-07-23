@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 
 # Based on https://github.com/google-research/google-research/blob/d0a9b1dad5c760a9cfab2a7e5e487be00886803c/jaxnerf/nerf/model_utils.py#L166
-def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=True):
+def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=False):
   """Volumetric Rendering Function.
   Args:
     rgb: jnp.ndarray(float32), color, [batch_size, num_samples, 3]
@@ -35,21 +35,22 @@ def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=True):
   ],
                                axis=-1)  # How much light is left as we enter each voxel
   weights = alpha * accum_prod  # The absolute amount of light that gets stuck in each voxel
-  comp_rgb = (weights[Ellipsis, None] * jax.nn.sigmoid(rgb)).sum(axis=-2)  # Accumulated color over the samples, ignoring background
+  comp_rgb = (weights[Ellipsis, None] * 1).sum(axis=-2)  # Accumulated color over the samples, ignoring background
   depth = (weights * z_vals[Ellipsis, :-1]).sum(axis=-1) # Weighted average of depths by contribution to final color
   acc = weights.sum(axis=-1)  # Total amount of light absorbed along the ray
   # Equivalent to (but slightly more efficient and stable than):
   #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
   inv_eps = 1 / eps
   disp = acc / depth
-  disp = jnp.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps) # disparity = inverse depth
+  disp = jnp.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, 0) # disparity = inverse depth
   if white_bkgd:
     comp_rgb = comp_rgb + (1. - acc[Ellipsis, None])  # Including the white background in the final color
+    
   return comp_rgb, disp, acc, weights
 
 
 # The volumetric rendering formula from Neural Volumes: https://arxiv.org/abs/1906.07751
-def nv_rendering(rgb, sigma, z_vals, dirs, white_bkgd=True):
+def nv_rendering(rgb, sigma, z_vals, dirs, white_bkgd=False):
   eps = 1e-10
   dists = z_vals[Ellipsis, 1:] - z_vals[Ellipsis, :-1]
   dists = dists * jnp.linalg.norm(dirs[Ellipsis, None, :], axis=-1)  # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
@@ -65,7 +66,7 @@ def nv_rendering(rgb, sigma, z_vals, dirs, white_bkgd=True):
   #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
   inv_eps = 1 / eps
   disp = acc / depth
-  disp = jnp.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps) # disparity = inverse depth
+  disp = jnp.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, 0) # disparity = inverse depth
   if white_bkgd:
     comp_rgb = comp_rgb + (1. - acc[Ellipsis, None])  # Including the white background in the final color
   return comp_rgb, disp, acc, weights
@@ -73,8 +74,9 @@ def nv_rendering(rgb, sigma, z_vals, dirs, white_bkgd=True):
 
 eps = 1e-5
 
-def near_zero(vector):
-  return jnp.abs(vector) < eps
+# This function isn't in the plenoptimize_static file
+# def near_zero(vector):
+#   return jnp.abs(vector) < eps
 
 
 def safe_floor(vector):
@@ -125,184 +127,186 @@ def voxel_ids_oneray(intersections, ray_o, ray_d, voxel_len, resolution, eps=1e-
 voxel_ids_partial = jax.jit(jax.vmap(fun=voxel_ids_oneray, in_axes=(0, 0, 0, None, None), out_axes=0))
 voxel_ids = jax.jit(jax.vmap(fun=voxel_ids_partial, in_axes=(1, 1, 1, None, None), out_axes=1))
 
-
+#  This function isn't in the plenoptimize_static file
+# nvm it is there just like furtheer downfor some reason
 def scalarize(i, j, k, resolution):
   return i*resolution*resolution + j*resolution + k
 
-
-def vectorize(index, resolution):
-  i = index // (resolution**2)
-  j = (index - i*resolution*resolution) // resolution
-  k = index - i*resolution*resolution - j*resolution
-  return jnp.array([i, j, k])
-
-
-# Remove voxels that are empty, where empty is determined by weight (contribution to training pixels) or sigma (opacity)
-def prune_grid(grid, method, threshold, train_c2w, H, W, focal, batch_size, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation):
-  # method can be 'weight' or 'sigma'
-  # sigma: prune by opacity
-  # weight: prune by contribution to the training rays
-  indices, data = grid
-  if method == 'sigma':
-    keep_idx = jnp.argwhere(data[-1] >= threshold)  # [N_keep, 1]
-  elif method == 'weight':
-    print(f'rendering all the training views to accumulate weight')
-    max_contribution = np.zeros((resolution, resolution, resolution))
-    for c2w in tqdm(train_c2w):
-        rays_o, rays_d = get_rays(H, W, focal, c2w)
-        rays_o = np.reshape(rays_o, [-1,3])
-        rays_d = np.reshape(rays_d, [-1,3])
-        for i in range(int(np.ceil(H*W/batch_size))):
-            start = i*batch_size
-            stop = min(H*W, (i+1)*batch_size)
-            if jitter > 0:
-                _, _, _, weightsi, voxel_idsi = jax.lax.stop_gradient(render_rays(grid, (rays_o[start:stop], rays_d[start:stop]), resolution, key[start:stop], radius, harmonic_degree, jitter, uniform, interpolation))
-            else:
-                _, _, _, weightsi, voxel_idsi = jax.lax.stop_gradient(render_rays(grid, (rays_o[start:stop], rays_d[start:stop]), resolution, key, radius, harmonic_degree, jitter, uniform, interpolation))
-            weightsi = np.asarray(weightsi)
-            voxel_idsi = np.asarray(voxel_idsi[:,:-1,:])
-            max_contribution[voxel_idsi[...,0], voxel_idsi[...,1], voxel_idsi[...,2]] = np.maximum(max_contribution[voxel_idsi[...,0], voxel_idsi[...,1], voxel_idsi[...,2]], weightsi)
-    keep_idx = jnp.argwhere(max_contribution >= threshold)  # [N_keep, 3]
-    keep_idx = indices[keep_idx[:,0], keep_idx[:,1], keep_idx[:,2]]  # [N_keep, 1]
-    del max_contribution, weightsi, voxel_idsi
-  keep_idx = jnp.squeeze(keep_idx)  # Indexes into the data
-  # Also keep any neighbors of any voxels that are kept
-  keep_idx = jax.vmap(lambda idx: data_index_to_scalar(idx, grid))(keep_idx)  # Map index into data to scalar spatial index
-  keep_idx = jax.vmap(lambda idx: get_neighbors(idx, resolution))(keep_idx).flatten()  # Get neighbors of these spatial indices
-  jnpindices = jnp.array(indices)
-  keep_idx = jax.vmap(lambda idx: scalar_to_data_index(idx, jnpindices))(keep_idx)  # Map scalar spatial index to index into data
-  # Filter the data
-  keep_idx = jnp.unique(keep_idx)  # dedup and sort
-  data = [d[keep_idx] for d in data] 
-  sort_idx = jnp.argsort(indices[indices>=0])
-  idx = jnp.argwhere(indices>=0)[sort_idx][keep_idx]  # [N_keep, 3]
-  indices = jnp.ones((resolution, resolution, resolution), dtype=int) * -1
-  indices = indices.at[idx[:,0], idx[:,1], idx[:,2]].set(jnp.arange(len(keep_idx), dtype=int))
-  print(f'after pruning, the number of nonempty indices is {len(jnp.argwhere(indices >= 0))}')
-  del idx, keep_idx, jnpindices
-  return (indices, data)
+# ----------------------------------- All this isn't in the plenoptimize_static file---------------------------------
+# def vectorize(index, resolution):
+#   i = index // (resolution**2)
+#   j = (index - i*resolution*resolution) // resolution
+#   k = index - i*resolution*resolution - j*resolution
+#   return jnp.array([i, j, k])
 
 
-# Map a position in the data array to the corresponding scalar spatial index
-def data_index_to_scalar(idx, grid):
-  indices, data = grid
-  active_voxels = jnp.argwhere(indices>=0)  # [N_active_voxels, 3]
-  assert len(data[-1]) == len(active_voxels)
-  resolution = len(indices)
-  return scalarize(active_voxels[idx,0], active_voxels[idx,1], active_voxels[idx,2], resolution)
+# # Remove voxels that are empty, where empty is determined by weight (contribution to training pixels) or sigma (opacity)
+# def prune_grid(grid, method, threshold, train_c2w, H, W, focal, batch_size, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation):
+#   # method can be 'weight' or 'sigma'
+#   # sigma: prune by opacity
+#   # weight: prune by contribution to the training rays
+#   indices, data = grid
+#   if method == 'sigma':
+#     keep_idx = jnp.argwhere(data[-1] >= threshold)  # [N_keep, 1]
+#   elif method == 'weight':
+#     print(f'rendering all the training views to accumulate weight')
+#     max_contribution = np.zeros((resolution, resolution, resolution))
+#     for c2w in tqdm(train_c2w):
+#         rays_o, rays_d = get_rays(H, W, focal, c2w)
+#         rays_o = np.reshape(rays_o, [-1,3])
+#         rays_d = np.reshape(rays_d, [-1,3])
+#         for i in range(int(np.ceil(H*W/batch_size))):
+#             start = i*batch_size
+#             stop = min(H*W, (i+1)*batch_size)
+#             if jitter > 0:
+#                 _, _, _, weightsi, voxel_idsi = jax.lax.stop_gradient(render_rays(grid, (rays_o[start:stop], rays_d[start:stop]), resolution, key[start:stop], radius, harmonic_degree, jitter, uniform, interpolation))
+#             else:
+#                 _, _, _, weightsi, voxel_idsi = jax.lax.stop_gradient(render_rays(grid, (rays_o[start:stop], rays_d[start:stop]), resolution, key, radius, harmonic_degree, jitter, uniform, interpolation))
+#             weightsi = np.asarray(weightsi)
+#             voxel_idsi = np.asarray(voxel_idsi[:,:-1,:])
+#             max_contribution[voxel_idsi[...,0], voxel_idsi[...,1], voxel_idsi[...,2]] = np.maximum(max_contribution[voxel_idsi[...,0], voxel_idsi[...,1], voxel_idsi[...,2]], weightsi)
+#     keep_idx = jnp.argwhere(max_contribution >= threshold)  # [N_keep, 3]
+#     keep_idx = indices[keep_idx[:,0], keep_idx[:,1], keep_idx[:,2]]  # [N_keep, 1]
+#     del max_contribution, weightsi, voxel_idsi
+#   keep_idx = jnp.squeeze(keep_idx)  # Indexes into the data
+#   # Also keep any neighbors of any voxels that are kept
+#   keep_idx = jax.vmap(lambda idx: data_index_to_scalar(idx, grid))(keep_idx)  # Map index into data to scalar spatial index
+#   keep_idx = jax.vmap(lambda idx: get_neighbors(idx, resolution))(keep_idx).flatten()  # Get neighbors of these spatial indices
+#   jnpindices = jnp.array(indices)
+#   keep_idx = jax.vmap(lambda idx: scalar_to_data_index(idx, jnpindices))(keep_idx)  # Map scalar spatial index to index into data
+#   # Filter the data
+#   keep_idx = jnp.unique(keep_idx)  # dedup and sort
+#   data = [d[keep_idx] for d in data] 
+#   sort_idx = jnp.argsort(indices[indices>=0])
+#   idx = jnp.argwhere(indices>=0)[sort_idx][keep_idx]  # [N_keep, 3]
+#   indices = jnp.ones((resolution, resolution, resolution), dtype=int) * -1
+#   indices = indices.at[idx[:,0], idx[:,1], idx[:,2]].set(jnp.arange(len(keep_idx), dtype=int))
+#   print(f'after pruning, the number of nonempty indices is {len(jnp.argwhere(indices >= 0))}')
+#   del idx, keep_idx, jnpindices
+#   return (indices, data)
 
 
-# Map a scalar index idx to the corresponding position in the data array, or -1 if pruned
-def scalar_to_data_index(idx, indices):
-  resolution = len(indices)
-  vector_idx = vectorize(idx, resolution)
-  print(f'indices has type {type(indices)} and idx has type {type(idx)}')
-  return indices[vector_idx[0], vector_idx[1], vector_idx[2]]
+# # Map a position in the data array to the corresponding scalar spatial index
+# def data_index_to_scalar(idx, grid):
+#   indices, data = grid
+#   active_voxels = jnp.argwhere(indices>=0)  # [N_active_voxels, 3]
+#   assert len(data[-1]) == len(active_voxels)
+#   resolution = len(indices)
+#   return scalarize(active_voxels[idx,0], active_voxels[idx,1], active_voxels[idx,2], resolution)
 
 
-# Map an index in a grid to a set of 8 child indices in the split grid
-def expand_index(idx, new_resolution):
-  i000 = scalarize(idx[0]*2, idx[1]*2, idx[2]*2, new_resolution)
-  i001 = scalarize(idx[0]*2, idx[1]*2, idx[2]*2 + 1, new_resolution)
-  i010 = scalarize(idx[0]*2, idx[1]*2 + 1, idx[2]*2, new_resolution)
-  i011 = scalarize(idx[0]*2, idx[1]*2 + 1, idx[2]*2 + 1, new_resolution)
-  i100 = scalarize(idx[0]*2 + 1, idx[1]*2, idx[2]*2, new_resolution)
-  i101 = scalarize(idx[0]*2 + 1, idx[1]*2, idx[2]*2 + 1, new_resolution)
-  i110 = scalarize(idx[0]*2 + 1, idx[1]*2 + 1, idx[2]*2, new_resolution)
-  i111 = scalarize(idx[0]*2 + 1, idx[1]*2 + 1, idx[2]*2 + 1, new_resolution)
-  return jnp.array([i000, i001, i010, i011, i100, i101, i110, i111])
+# # Map a scalar index idx to the corresponding position in the data array, or -1 if pruned
+# def scalar_to_data_index(idx, indices):
+#   resolution = len(indices)
+#   vector_idx = vectorize(idx, resolution)
+#   print(f'indices has type {type(indices)} and idx has type {type(idx)}')
+#   return indices[vector_idx[0], vector_idx[1], vector_idx[2]]
 
 
-def map_neighbors(offset):
-  # offset is a ternary 3-vector; return its index into the offsets array (of length 27, in expand_data)
-  return (offset[0] + 1)*9 + (offset[1] + 1)*3 + offset[2] + 1
+# # Map an index in a grid to a set of 8 child indices in the split grid
+# def expand_index(idx, new_resolution):
+#   i000 = scalarize(idx[0]*2, idx[1]*2, idx[2]*2, new_resolution)
+#   i001 = scalarize(idx[0]*2, idx[1]*2, idx[2]*2 + 1, new_resolution)
+#   i010 = scalarize(idx[0]*2, idx[1]*2 + 1, idx[2]*2, new_resolution)
+#   i011 = scalarize(idx[0]*2, idx[1]*2 + 1, idx[2]*2 + 1, new_resolution)
+#   i100 = scalarize(idx[0]*2 + 1, idx[1]*2, idx[2]*2, new_resolution)
+#   i101 = scalarize(idx[0]*2 + 1, idx[1]*2, idx[2]*2 + 1, new_resolution)
+#   i110 = scalarize(idx[0]*2 + 1, idx[1]*2 + 1, idx[2]*2, new_resolution)
+#   i111 = scalarize(idx[0]*2 + 1, idx[1]*2 + 1, idx[2]*2 + 1, new_resolution)
+#   return jnp.array([i000, i001, i010, i011, i100, i101, i110, i111])
 
 
-# Split each nonempty voxel in each dimension, using trilinear interpolation to initialize child voxels
-def split_weights(childx, childy, childz):
-  # childx, childy, childz are each -1 or 1 denoting the position of the child voxel within the parent (-1 instead of 0 for convenience)
-  # all 27 neighbors of the parent are considered in the weights, but only 8 of the weights are nonzero for each child
-  weights = jnp.zeros(27)
-  # center of parent voxel is distance 1/4 from center of each child (nearest neighbor in all dimensions).
-  weights = weights.at[13].set(0.75 * 0.75 * 0.75)
-  # neighbors that are one away have 2 zeros and one nonzero. There should be 3 of these.
-  weights = weights.at[map_neighbors([childx, 0, 0])].set(0.75 * 0.75 * 0.25)
-  weights = weights.at[map_neighbors([0, childy, 0])].set(0.75 * 0.75 * 0.25)
-  weights = weights.at[map_neighbors([0, 0, childz])].set(0.75 * 0.75 * 0.25)
-  # neighbors that are 2 away have 1 zero and two nonzeros. There should be 3 of these.
-  weights = weights.at[map_neighbors([childx, childy, 0])].set(0.75 * 0.25 * 0.25)
-  weights = weights.at[map_neighbors([childx, 0, childz])].set(0.75 * 0.25 * 0.25)
-  weights = weights.at[map_neighbors([0, childy, childz])].set(0.75 * 0.25 * 0.25)
-  # one neighbor is 3 away and has all 3 nonzeros.
-  weights = weights.at[map_neighbors([childx, childy, childz])].set(0.25 * 0.25 * 0.25)
-  return weights
+# def map_neighbors(offset):
+#   # offset is a ternary 3-vector; return its index into the offsets array (of length 27, in expand_data)
+#   return (offset[0] + 1)*9 + (offset[1] + 1)*3 + offset[2] + 1
 
 
-def expand_data(idx, grid):
-  # idx is a vector index of the voxel to be split
-  offsets = jnp.array([[-1,-1,-1], [-1,-1,0], [-1,-1,1], [-1,0,-1], [-1,0,0], [-1,0,1], [-1,1,-1], [-1,1,0], [-1,1,1],
-                       [0,-1,-1], [0,-1,0], [0,-1,1], [0,0,-1], [0,0,0], [0,0,1], [0,1,-1], [0,1,0], [0,1,1],
-                       [1,-1,-1], [1,-1,0], [1,-1,1], [1,0,-1], [1,0,0], [1,0,1], [1,1,-1], [1,1,0], [1,1,1]])  # [27, 3]
-  neighbor_idx = idx[jnp.newaxis,:] + offsets  # [27, 3]
-  neighbor_data = grid_lookup(neighbor_idx[:,0], neighbor_idx[:,1], neighbor_idx[:,2], grid)
-  child_idx = jnp.array([[-1,-1,-1], [-1,-1,1], [-1,1,-1], [-1,1,1], [1,-1,-1], [1,-1,1], [1,1,-1], [1,1,1]])  # [8, 3]
-  weights = jax.vmap(split_weights)(child_idx[:,0], child_idx[:,1], child_idx[:,2])  # [8, 27] first index is over the 8 child voxels, second index is over the neighbors for the parent, only 8 of which are relevant to each child
-  expanded_data = [jnp.sum(weights[..., jnp.newaxis] * d, axis=1) for d in neighbor_data[:-1]]
-  expanded_data.append(jnp.sum(weights * neighbor_data[-1], axis=1))
-  del weights, offsets, neighbor_idx, neighbor_data, child_idx
-  return expanded_data
+# # Split each nonempty voxel in each dimension, using trilinear interpolation to initialize child voxels
+# def split_weights(childx, childy, childz):
+#   # childx, childy, childz are each -1 or 1 denoting the position of the child voxel within the parent (-1 instead of 0 for convenience)
+#   # all 27 neighbors of the parent are considered in the weights, but only 8 of the weights are nonzero for each child
+#   weights = jnp.zeros(27)
+#   # center of parent voxel is distance 1/4 from center of each child (nearest neighbor in all dimensions).
+#   weights = weights.at[13].set(0.75 * 0.75 * 0.75)
+#   # neighbors that are one away have 2 zeros and one nonzero. There should be 3 of these.
+#   weights = weights.at[map_neighbors([childx, 0, 0])].set(0.75 * 0.75 * 0.25)
+#   weights = weights.at[map_neighbors([0, childy, 0])].set(0.75 * 0.75 * 0.25)
+#   weights = weights.at[map_neighbors([0, 0, childz])].set(0.75 * 0.75 * 0.25)
+#   # neighbors that are 2 away have 1 zero and two nonzeros. There should be 3 of these.
+#   weights = weights.at[map_neighbors([childx, childy, 0])].set(0.75 * 0.25 * 0.25)
+#   weights = weights.at[map_neighbors([childx, 0, childz])].set(0.75 * 0.25 * 0.25)
+#   weights = weights.at[map_neighbors([0, childy, childz])].set(0.75 * 0.25 * 0.25)
+#   # one neighbor is 3 away and has all 3 nonzeros.
+#   weights = weights.at[map_neighbors([childx, childy, childz])].set(0.25 * 0.25 * 0.25)
+#   return weights
 
 
-# Map an index (scalarized) to itself and its 6 neighbors
-def get_neighbors(idx, resolution):
-  volid = vectorize(idx, resolution)
-  front = scalarize(jnp.minimum(resolution-1, volid[0] + 1), volid[1], volid[2], resolution)
-  back = scalarize(jnp.maximum(0, volid[0] - 1), volid[1], volid[2], resolution)
-  top = scalarize(volid[0], jnp.minimum(resolution-1, volid[1] + 1), volid[2], resolution)
-  bottom = scalarize(volid[0], jnp.maximum(0, volid[1] - 1), volid[2], resolution)
-  right = scalarize(volid[0], volid[1], jnp.minimum(resolution-1, volid[2] + 1), resolution)
-  left = scalarize(volid[0], volid[1], jnp.maximum(0, volid[2] - 1), resolution)
-  return jnp.array([idx, front, back, top, bottom, right, left])
+# def expand_data(idx, grid):
+#   # idx is a vector index of the voxel to be split
+#   offsets = jnp.array([[-1,-1,-1], [-1,-1,0], [-1,-1,1], [-1,0,-1], [-1,0,0], [-1,0,1], [-1,1,-1], [-1,1,0], [-1,1,1],
+#                        [0,-1,-1], [0,-1,0], [0,-1,1], [0,0,-1], [0,0,0], [0,0,1], [0,1,-1], [0,1,0], [0,1,1],
+#                        [1,-1,-1], [1,-1,0], [1,-1,1], [1,0,-1], [1,0,0], [1,0,1], [1,1,-1], [1,1,0], [1,1,1]])  # [27, 3]
+#   neighbor_idx = idx[jnp.newaxis,:] + offsets  # [27, 3]
+#   neighbor_data = grid_lookup(neighbor_idx[:,0], neighbor_idx[:,1], neighbor_idx[:,2], grid)
+#   child_idx = jnp.array([[-1,-1,-1], [-1,-1,1], [-1,1,-1], [-1,1,1], [1,-1,-1], [1,-1,1], [1,1,-1], [1,1,1]])  # [8, 3]
+#   weights = jax.vmap(split_weights)(child_idx[:,0], child_idx[:,1], child_idx[:,2])  # [8, 27] first index is over the 8 child voxels, second index is over the neighbors for the parent, only 8 of which are relevant to each child
+#   expanded_data = [jnp.sum(weights[..., jnp.newaxis] * d, axis=1) for d in neighbor_data[:-1]]
+#   expanded_data.append(jnp.sum(weights * neighbor_data[-1], axis=1))
+#   del weights, offsets, neighbor_idx, neighbor_data, child_idx
+#   return expanded_data
 
 
-# Subdivide each voxel into 8 voxels, using trilinear interpolation and respecting sparsity
-def split_grid(grid):
-  indices, data = grid
-  # Expand the indices, respecting sparsity
-  new_resolution = len(indices) * 2
-  big_indices = jnp.ones((new_resolution, new_resolution, new_resolution), dtype=int) * -1
-  keep_idx = jnp.argwhere(indices >= 0)  # [N_keep, 3]
-  # Expand the data, with trilinear interpolation
-  big_data_partial = jax.vmap(expand_data, in_axes=(0, None))(keep_idx, grid)
-  big_data = [d.reshape(len(data[-1])*8, 3) for d in big_data_partial[:-1]]
-  big_data.append(big_data_partial[-1].reshape(len(data[-1])*8))
-  del data
-  big_keep_idx = jnp.ravel(jax.vmap(lambda index: expand_index(index, new_resolution), in_axes=0)(keep_idx))
-  idx = vectorize(big_keep_idx, new_resolution)  # [3, N_keep*8]
-  big_indices = big_indices.at[idx[0,:], idx[1,:], idx[2,:]].set(jnp.arange(len(big_keep_idx), dtype=int))
-  del idx, big_keep_idx, keep_idx, indices
-  print(f'after splitting, the number of nonempty indices is {len(jnp.argwhere(big_indices >= 0))}')
-  return (big_indices, big_data)
+# # Map an index (scalarized) to itself and its 6 neighbors
+# def get_neighbors(idx, resolution):
+#   volid = vectorize(idx, resolution)
+#   front = scalarize(jnp.minimum(resolution-1, volid[0] + 1), volid[1], volid[2], resolution)
+#   back = scalarize(jnp.maximum(0, volid[0] - 1), volid[1], volid[2], resolution)
+#   top = scalarize(volid[0], jnp.minimum(resolution-1, volid[1] + 1), volid[2], resolution)
+#   bottom = scalarize(volid[0], jnp.maximum(0, volid[1] - 1), volid[2], resolution)
+#   right = scalarize(volid[0], volid[1], jnp.minimum(resolution-1, volid[2] + 1), resolution)
+#   left = scalarize(volid[0], volid[1], jnp.maximum(0, volid[2] - 1), resolution)
+#   return jnp.array([idx, front, back, top, bottom, right, left])
 
+
+# # Subdivide each voxel into 8 voxels, using trilinear interpolation and respecting sparsity
+# def split_grid(grid):
+#   indices, data = grid
+#   # Expand the indices, respecting sparsity
+#   new_resolution = len(indices) * 2
+#   big_indices = jnp.ones((new_resolution, new_resolution, new_resolution), dtype=int) * -1
+#   keep_idx = jnp.argwhere(indices >= 0)  # [N_keep, 3]
+#   # Expand the data, with trilinear interpolation
+#   big_data_partial = jax.vmap(expand_data, in_axes=(0, None))(keep_idx, grid)
+#   big_data = [d.reshape(len(data[-1])*8, 3) for d in big_data_partial[:-1]]
+#   big_data.append(big_data_partial[-1].reshape(len(data[-1])*8))
+#   del data
+#   big_keep_idx = jnp.ravel(jax.vmap(lambda index: expand_index(index, new_resolution), in_axes=0)(keep_idx))
+#   idx = vectorize(big_keep_idx, new_resolution)  # [3, N_keep*8]
+#   big_indices = big_indices.at[idx[0,:], idx[1,:], idx[2,:]].set(jnp.arange(len(big_keep_idx), dtype=int))
+#   del idx, big_keep_idx, keep_idx, indices
+#   print(f'after splitting, the number of nonempty indices is {len(jnp.argwhere(big_indices >= 0))}')
+#   return (big_indices, big_data)
+# ----------------------------------- All this isn't in the plenoptimize_static file---------------------------------
 
 def initialize_grid(resolution, ini_rgb=0.0, ini_sigma=0.1, harmonic_degree=0):
   sh_dim = (harmonic_degree + 1)**2
   data = []  # data is a list of length sh_dim + 1
   for _ in range(sh_dim):
     data.append(jnp.ones((resolution**3, 3), dtype=np.float32) * ini_rgb)
-  data.append(jnp.ones((resolution**3), dtype=np.float32) * ini_sigma)
-  indices = jnp.arange(resolution**3, dtype=int).reshape((resolution, resolution, resolution))
-  return (indices, data)
+  # data.append(jnp.ones((resolution**3), dtype=np.float32) * ini_sigma)
+  # indices = jnp.arange(resolution**3, dtype=int).reshape((resolution, resolution, resolution))
+  data.append(jnp.ones((resolution, resolution, resolution), dtype=np.float32) * ini_sigma)
+  return (data)
 
 
-def save_grid(grid, dirname):
-  indices, data = grid
+def save_grid(data, dirname):
+  # indices, data = grid
   if not os.path.exists(dirname):
     os.makedirs(dirname)
   np.save(os.path.join(dirname, f'sigma_grid.npy'), data[-1])
   for i in range(len(data)-1):
     np.save(os.path.join(dirname, f'sh_grid{i}.npy'), data[i])
-  np.save(os.path.join(dirname, f'indices.npy'), indices)
+  # np.save(os.path.join(dirname, f'indices.npy'), indices)
 
 
 def load_grid(dirname, sh_dim):
@@ -310,8 +314,8 @@ def load_grid(dirname, sh_dim):
   for i in range(sh_dim):
     data.append(np.load(os.path.join(dirname, f'sh_grid{i}.npy')))
   data.append(np.load(os.path.join(dirname, f'sigma_grid.npy')))
-  indices = np.load(os.path.join(dirname, f'indices.npy'))
-  return (indices, data)
+  # indices = np.load(os.path.join(dirname, f'indices.npy'))
+  return (data)
 
 
 @jax.jit
@@ -392,10 +396,14 @@ def tricubic_interpolation_matrix():
 
 
 @jax.jit
-def grid_lookup(x, y, z, grid):
-  indices, data = grid
-  ret = [jnp.where(indices[x,y,z,jnp.newaxis]>=0, d[indices[x,y,z]], jnp.zeros(3)) for d in data[:-1]]
-  ret.append(jnp.where(indices[x,y,z]>=0, data[-1][indices[x,y,z]], 0))
+def grid_lookup(x, y, z, data):
+  # indices, data = grid
+  # ret = [jnp.where(indices[x,y,z,jnp.newaxis]>=0, d[indices[x,y,z]], jnp.zeros(3)) for d in data[:-1]]
+  # ret.append(jnp.where(indices[x,y,z]>=0, data[-1][indices[x,y,z]], 0))
+  # return ret
+  ret = [jnp.zeros(3) for i in range(len(data[:-1]))]  # Skip expensive lookups during alpha-only optimization
+  resolution = int(len(data[-1])**(1./3))
+  ret.append(data[-1][x,y,z])
   return ret
 
 
@@ -471,6 +479,8 @@ def render_rays(grid, rays, resolution, keys, radius=1.3, harmonic_degree=0, jit
   offset_bigger = jax.lax.stop_gradient((safe_ceil(first_intersection / voxel_len) * voxel_len - first_intersection) / rays_d)
   offset_smaller = jax.lax.stop_gradient((safe_floor(first_intersection / voxel_len) * voxel_len - first_intersection) / rays_d)
   offset = jax.lax.stop_gradient(jnp.maximum(offset_bigger, offset_smaller))
+  # print(first_intersection)
+
   # Compute the samples along each ray
   matrix = None
   powers = None
@@ -481,8 +491,13 @@ def render_rays(grid, rays, resolution, keys, radius=1.3, harmonic_degree=0, jit
   else:
     voxel_sh, voxel_sigma, intersections = get_intersections_partial({"start": start, "stop": stop, "offset": offset, "interval": interval, "ray_o": rays_o, "ray_d": rays_d}, grid, resolution, radius, jitter, uniform, keys, sh_dim, interpolation, matrix, powers)
   # Apply spherical harmonics
-  voxel_rgb = sh.eval_sh(harmonic_degree, voxel_sh, rays_d)
+  # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! COMMENTED THIS OUT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  # voxel_rgb = sh.eval_sh(harmonic_degree, voxel_sh, rays_d)
   # Call volumetric_rendering
+  if harmonic_degree >= 0:
+    voxel_rgb = sh.eval_sh(harmonic_degree, voxel_sh, rays_d)
+  else:
+    voxel_rgb = []
   if nv:
     rgb, disp, acc, weights = nv_rendering(voxel_rgb, voxel_sigma, intersections, rays_d)
   else:
