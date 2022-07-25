@@ -118,7 +118,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    default=.001,
+    default=.003,
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
 flags.add_argument(
@@ -234,7 +234,7 @@ def get_ct(root, stage):
 
     # projection_matrices = np.genfromtxt(os.path.join(root, 'proj_mat.csv'), delimiter=',')  # [719, 12]
     # Loop through the number of projections
-    for i in range(0, num_proj): 
+    for i in range(1, num_proj+1): 
         index = "{:04d}".format(i)
         im_gt = imageio.imread(os.path.join('./ct_scans/pepper/scans', f'Pepper_{index}.tif')).astype(np.float32) / 255.0
         im_gt = 1 - im_gt / np.max(im_gt)
@@ -242,7 +242,7 @@ def get_ct(root, stage):
         all_gt.append(im_gt)
     # focal = 75  # cm
     
-    focal = 500000 
+    focal = 550000 
     all_gt = np.asarray(all_gt)
 
     # mask = np.zeros(len(all_c2w))
@@ -251,7 +251,7 @@ def get_ct(root, stage):
     idx = np.random.choice(len(all_c2w), n_train + n_test)
     train_idx = idx[0:n_train]
     test_idx = idx[n_train:]
-    # mask = np.zeros_like(a)
+    # # mask = np.zeros_like(a)
     # mask[idx] = 1
     # mask = mask.astype(bool)
     if stage == 'train':
