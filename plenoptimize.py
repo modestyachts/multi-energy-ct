@@ -118,7 +118,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    default=.003,
+    default=.0025,
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
 flags.add_argument(
@@ -242,7 +242,7 @@ def get_ct(root, stage):
         all_gt.append(im_gt)
     # focal = 75  # cm
     
-    focal = 550000 
+    focal = 600000 
     all_gt = np.asarray(all_gt)
 
     # mask = np.zeros(len(all_c2w))
@@ -651,6 +651,8 @@ def main():
                         del data_grad
                     del mse, batch, batch_rays, target_s, subkeys, effective_j
                 lrs = [FLAGS.lr_rgb / (FLAGS.logical_batch_size // FLAGS.physical_batch_size)]*sh_dim + [FLAGS.lr_sigma / (FLAGS.logical_batch_size // FLAGS.physical_batch_size)]
+
+                lrs  = [lr * np.cos(k /((len(rays_rgb) // FLAGS.logical_batch_size)+ 10) * (np.pi/2)) for lr in lrs]
                 
                 # avg_g = [0.9 * (avg_g_i) + 0.1 * (g_i**2) for (avg_g_i, g_i) in zip(avg_g, data_grad)]
                 avg_g = rmsprop_update(avg_g, data_grad)
