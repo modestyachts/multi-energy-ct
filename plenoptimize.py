@@ -8,9 +8,7 @@ import numpy as np
 from tqdm import tqdm
 import imageio
 from PIL import Image
-import jax
 import time
-import torch
 import config
 np.random.seed(0)
 
@@ -118,7 +116,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    default=.0025,
+    default=.0045,
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
 flags.add_argument(
@@ -242,13 +240,15 @@ def get_ct(root, stage):
         all_gt.append(im_gt)
     # focal = 75  # cm
     
-    focal = 600000 
+    focal = 600000
+    # focal = 10
     all_gt = np.asarray(all_gt)
 
     # mask = np.zeros(len(all_c2w))
     n_train = 25
     n_test = 10
     idx = np.random.choice(len(all_c2w), n_train + n_test)
+    # idx = np.random.choice(len(all_c2w), 25)
     train_idx = idx[0:n_train]
     test_idx = idx[n_train:]
     # # mask = np.zeros_like(a)
@@ -398,15 +398,23 @@ def get_rays_np(H, W, focal, c2w):
     # SrcToObject = 595.033142
     # SrcToDetector = 983.0
     # radius = SrcToDetector - SrcToObject
-
-    i, j = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing='xy')
-    dirs = torch.stack([ -torch.ones_like(i), (i - W*.5) / focal, (j - H*.5) / focal], dim=-1)
-    dirs = dirs.numpy()
-    # rays_d = dirs @ c2w[:3, :3].T
-    # rays_d = np.sum(dirs[..., np.newaxis, :] * -c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    i, j = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5, indexing='xy')
+    dirs = np.stack([ -np.ones_like(i), (i-W*.5)/focal, -(j-H*.5)/focal], -1)
+    # Rotate ray directions from camera frame to the world frame
+    # rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
     rays_d = dirs @ c2w[:3, :3].T
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = np.broadcast_to(c2w[:3,-1], np.shape(rays_d))
+    return rays_o, rays_d
+
+    # i, j = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5, indexing='xy')
+    # dirs = np.stack([ -np.ones_like(i), (i - W*.5) / focal, (j - H*.5) / focal], axis=-1)
+    # dirs = dirs.numpy()
+    # # rays_d = dirs @ c2w[:3, :3].T
+    # # rays_d = np.sum(dirs[..., np.newaxis, :] * -c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    # rays_d = dirs @ c2w[:3, :3].T
+    # # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    # rays_o = np.broadcast_to(c2w[:3,-1], np.shape(rays_d))
 
     # c2w[:3,3] += [radius*np.cos(0), radius*np.sin(0), 0]
     # print(f'rays_o after is  {rays_o}')
@@ -414,7 +422,7 @@ def get_rays_np(H, W, focal, c2w):
     # I literally done even know what to do anymore with this code
     # there must be a correct way to do this, but i don't know it :(
     # I got it :)
-    return rays_o, rays_d#[0,0]
+    # return rays_o, rays_d#[0,0]
 
 
 def render_pose_rays(data_dict, c2w, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, batch_size, interpolation, nv):
