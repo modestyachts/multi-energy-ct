@@ -1,14 +1,15 @@
 from os.path import join, exists
 import numpy as np
 from imageio.v2 import imread, get_writer
-import math
-import json
-import torch
 
-def ct():
+def ct(root):
     # Open the file
-    dir = "ct_scans/pepper/"
-    file = open(dir + "Pepper_CT_parameters.xtekct", "r")
+    if root == '/data/fabriziov/ct_scans/pepper/scans/':
+        dir = "/data/fabriziov/ct_scans/pepper/"
+        file = open(dir + "Pepper_CT_parameters.xtekct", "r")
+    elif root == '/data/fabriziov/ct_scans/pomegranate/scans/':
+        dir = "/data/fabriziov/ct_scans/pomegranate/"
+        file = open(dir + "Pomegranate_CT_parameters.xtekct", "r")
 
     # Save a list of the lines read in a
     list = file.readlines()
@@ -105,4 +106,4 @@ def ct():
 
     all_c2w = np.asarray(all_c2w)
 
-    return(all_c2w, num_proj, c)
+    return(all_c2w, num_proj)

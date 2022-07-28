@@ -38,7 +38,7 @@ flags = ArgumentParser()
 flags.add_argument(
     "--data_dir", '-d',
     type=str,
-    default='./ct_scans/',
+    default='/data/fabriziov/ct_scans/',
     help="Dataset directory e.g. ct_scans/"
 )
 flags.add_argument(
@@ -50,7 +50,7 @@ flags.add_argument(
 flags.add_argument(
     "--scene",
     type=str,
-    default='pepper/scans/',
+    default='pomegranate/scans/',
     help="Name of the synthetic scene."
 )
 flags.add_argument(
@@ -116,7 +116,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    default=.0045,
+    default=.00375,
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
 flags.add_argument(
@@ -222,26 +222,25 @@ np.random.seed(0)
 
 # This is where I would call for a function or a seperate file that would be able to make a projection matrix for the new datasets
 #   the plenoptimize_static file has a def get_jerry(root) function that reads the projection numbers from a csv file.
-def get_ct(root, stage):
+def get_ct_pepper(root, stage):
     # assert FLAGS.ct
     # all_c2w = []
     all_gt = []
     print('LOAD DATA', root)
 
-    all_c2w, num_proj, c = config.ct() # Get the all_c2w array and the number of projections from the ct function in the config file
+    all_c2w, num_proj = config.ct(root) # Get the all_c2w array and the number of projections from the ct function in the config file
 
     # projection_matrices = np.genfromtxt(os.path.join(root, 'proj_mat.csv'), delimiter=',')  # [719, 12]
     # Loop through the number of projections
     for i in range(1, num_proj+1): 
         index = "{:04d}".format(i)
-        im_gt = imageio.imread(os.path.join('./ct_scans/pepper/scans', f'Pepper_{index}.tif')).astype(np.float32) / 255.0
+        im_gt = imageio.imread(os.path.join('/data/fabriziov/ct_scans/pepper/scans', f'Pepper_{index}.tif')).astype(np.float32) / 255.0
         im_gt = 1 - im_gt / np.max(im_gt)
         # print(f'im_gt ranges from {np.min(im_gt)} to {np.max(im_gt)}')
         all_gt.append(im_gt)
     # focal = 75  # cm
     
     focal = 600000
-    # focal = 10
     all_gt = np.asarray(all_gt)
 
     # mask = np.zeros(len(all_c2w))
@@ -265,16 +264,61 @@ def get_ct(root, stage):
         all_gt = all_gt[test_idx]
         all_c2w = all_c2w[test_idx]
     # print(f'all_gt has shape {all_gt.shape}')
+    return focal, all_c2w, all_gt
+
+
+def get_ct_pomegranate(root, stage):
+    all_gt = []
+    print('LOAD DATA', root)
+
+    all_c2w, num_proj = config.ct(root) # Get the all_c2w array and the number of projections from the ct function in the config file
+
+    # Loop through the number of projections
+    for i in range(1, num_proj+1): 
+        index = "{:04d}".format(i)
+        im_gt = imageio.imread(os.path.join('/data/fabriziov/ct_scans/pomegranate/scans', f'Pomegranate_{index}.tif')).astype(np.float32) / 255.0
+        im_gt = 1 - im_gt / np.max(im_gt)
+        all_gt.append(im_gt)
+    
+    focal = 600000
+    all_gt = np.asarray(all_gt)
+
+    # mask = np.zeros(len(all_c2w))
+    n_train = 50
+    n_test = 10
+    idx = np.random.choice(len(all_c2w), n_train + n_test)
+    # idx = np.random.choice(len(all_c2w), 25)
+    train_idx = idx[0:n_train]
+    test_idx = idx[n_train:]
+    # # mask = np.zeros_like(a)
+    # mask[idx] = 1
+    # mask = mask.astype(bool)
+    if stage == 'train':
+        # all_gt = all_gt[mask]
+        # all_c2w = all_c2w[mask]
+        all_gt = all_gt[train_idx]
+        all_c2w = all_c2w[train_idx]
+    elif stage == 'test':
+        # all_gt = all_gt[~mask]
+        # all_c2w = all_c2w[~mask]
+        all_gt = all_gt[test_idx]
+        all_c2w = all_c2w[test_idx]
 
     return focal, all_c2w, all_gt
 
+
 def get_data(root, stage):
-    # print(root)
-    if root == './ct_scans/pepper/scans/':
-        focal, all_c2w, all_gt = get_ct(root, stage)  
+
+    if root == '/data/fabriziov/ct_scans/pepper/scans/':
+        focal, all_c2w, all_gt = get_ct_pepper(root, stage)  
         # idx = np.random.choice(len(all_c2w), FLAGS.num_views) # Pick a subset of the data at random
         # return focal, all_c2w[idx], all_gt[idx]
         return focal, all_c2w, all_gt
+
+    elif root == '/data/fabriziov/ct_scans/pomegranate/scans/':
+        focal, all_c2w, all_gt = get_ct_pomegranate(root, stage)
+        return focal, all_c2w, all_gt
+    
     all_c2w = []
     all_gt = []
 
@@ -304,7 +348,7 @@ def get_data(root, stage):
 
 
 if __name__ == "__main__":
-    print(data_dir)
+    print(f'the data directory is {data_dir}')
     focal, train_c2w, train_gt = get_data(data_dir, "train")
     test_focal, test_c2w, test_gt = get_data(data_dir, "test")
     assert focal == test_focal
