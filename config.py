@@ -10,7 +10,7 @@ def ct(root):
     elif root == '/data/fabriziov/ct_scans/pomegranate/scans/':
         dir = "/data/fabriziov/ct_scans/pomegranate/"
         file = open(dir + "Pomegranate_CT_parameters.xtekct", "r")
-
+        
     # Save a list of the lines read in a
     list = file.readlines()
 

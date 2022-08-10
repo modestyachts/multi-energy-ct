@@ -50,7 +50,7 @@ flags.add_argument(
 flags.add_argument(
     "--scene",
     type=str,
-    default='pomegranate/scans/',
+    default='pepper/scans/',
     help="Name of the synthetic scene."
 )
 flags.add_argument(
@@ -92,13 +92,13 @@ flags.add_argument(
 flags.add_argument(
     '--num_epochs',
     type=int,
-    default=1,
+    default=2,
     help='Epochs to train for.'
 )
 flags.add_argument(
     '--render_interval',
     type=int,
-    default=1,
+    default=30,
     help='Render images during test/val step every x images.'
 )
 flags.add_argument(
@@ -116,7 +116,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    default=.00375,
+    default=0.0025,
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
 flags.add_argument(
@@ -243,26 +243,26 @@ def get_ct_pepper(root, stage):
     focal = 600000
     all_gt = np.asarray(all_gt)
 
-    # mask = np.zeros(len(all_c2w))
-    n_train = 25
-    n_test = 10
-    idx = np.random.choice(len(all_c2w), n_train + n_test)
-    # idx = np.random.choice(len(all_c2w), 25)
-    train_idx = idx[0:n_train]
-    test_idx = idx[n_train:]
+    mask = np.zeros(len(all_c2w))
+    # n_train = 25
+    # n_test = 10
+    # idx = np.random.choice(len(all_c2w), n_train + n_test)
+    idx = np.random.choice(len(all_c2w), 25)
+    # train_idx = idx[0:n_train]
+    # test_idx = idx[n_train:]
     # # mask = np.zeros_like(a)
-    # mask[idx] = 1
-    # mask = mask.astype(bool)
+    mask[idx] = 1
+    mask = mask.astype(bool)
     if stage == 'train':
-        # all_gt = all_gt[mask]
-        # all_c2w = all_c2w[mask]
-        all_gt = all_gt[train_idx]
-        all_c2w = all_c2w[train_idx]
+        all_gt = all_gt[mask]
+        all_c2w = all_c2w[mask]
+        # all_gt = all_gt[train_idx]
+        # all_c2w = all_c2w[train_idx]
     elif stage == 'test':
-        # all_gt = all_gt[~mask]
-        # all_c2w = all_c2w[~mask]
-        all_gt = all_gt[test_idx]
-        all_c2w = all_c2w[test_idx]
+        all_gt = all_gt[~mask]
+        all_c2w = all_c2w[~mask]
+        # all_gt = all_gt[test_idx]
+        # all_c2w = all_c2w[test_idx]
     # print(f'all_gt has shape {all_gt.shape}')
     return focal, all_c2w, all_gt
 
@@ -283,26 +283,22 @@ def get_ct_pomegranate(root, stage):
     focal = 600000
     all_gt = np.asarray(all_gt)
 
-    # mask = np.zeros(len(all_c2w))
-    n_train = 50
-    n_test = 10
-    idx = np.random.choice(len(all_c2w), n_train + n_test)
-    # idx = np.random.choice(len(all_c2w), 25)
-    train_idx = idx[0:n_train]
-    test_idx = idx[n_train:]
+    mask = np.zeros(len(all_c2w))
+    # n_train = 50
+    # n_test = 10
+    # idx = np.random.choice(len(all_c2w), n_train + n_test)
+    idx = np.random.choice(len(all_c2w), 50)
+    # train_idx = idx[0:n_train]
+    # test_idx = idx[n_train:]
     # # mask = np.zeros_like(a)
-    # mask[idx] = 1
-    # mask = mask.astype(bool)
+    mask[idx] = 1
+    mask = mask.astype(bool)
     if stage == 'train':
-        # all_gt = all_gt[mask]
-        # all_c2w = all_c2w[mask]
-        all_gt = all_gt[train_idx]
-        all_c2w = all_c2w[train_idx]
+        all_gt = all_gt[mask]
+        all_c2w = all_c2w[mask]
     elif stage == 'test':
-        # all_gt = all_gt[~mask]
-        # all_c2w = all_c2w[~mask]
-        all_gt = all_gt[test_idx]
-        all_c2w = all_c2w[test_idx]
+        all_gt = all_gt[~mask]
+        all_c2w = all_c2w[~mask]
 
     return focal, all_c2w, all_gt
 
@@ -348,7 +344,7 @@ def get_data(root, stage):
 
 
 if __name__ == "__main__":
-    print(f'the data directory is {data_dir}')
+    # print(f'the data directory is {data_dir}')
     focal, train_c2w, train_gt = get_data(data_dir, "train")
     test_focal, test_c2w, test_gt = get_data(data_dir, "test")
     assert focal == test_focal
@@ -549,7 +545,7 @@ def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name
 
 def update_grid(old_grid, lr, grid_grad):
     if FLAGS.nonnegative:
-            return jnp.clip(index_add(old_grid, index[...], -1 * lr * grid_grad), a_min=0)
+        return jnp.clip(index_add(old_grid, index[...], -1 * lr * grid_grad), a_min=0)
     else:
         return index_add(old_grid, index[...], -1 * lr * grid_grad)
 
