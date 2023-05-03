@@ -412,52 +412,19 @@ def values_oneray(intersections, grid, ray_o, ray_d, resolution, key, sh_dim, ra
   voxel_len = radius * 2.0 / resolution
   if not jitter:
     pts = ray_o[jnp.newaxis, :] + intersections[:, jnp.newaxis] * ray_d[jnp.newaxis, :]  # [n_intersections, 3]
-    pts = pts[:, jnp.newaxis, :]  # [n_intersections, 1, 3]
-    offsets = jnp.array([[-1,-1,-1], [-1,-1,1], [-1,1,-1], [-1,1,1], [1,-1,-1], [1,-1,1], [1,1,-1], [1,1,1]]) * voxel_len / 2.0  # [8, 3]
-    neighbors = jnp.clip(pts + offsets[jnp.newaxis, :, :], a_min=-radius, a_max=radius)  # [n_intersections, 8, 3]
-    neighbor_centers = jnp.clip((jnp.floor(neighbors / voxel_len + eps) + 0.5) * voxel_len, a_min=-(radius - voxel_len/2), a_max=radius - voxel_len/2)  # [n_intersections, 8, 3]
-    neighbor_ids = jnp.array(jnp.floor(neighbor_centers / voxel_len + eps) + resolution / 2, dtype=int)  # [n_intersections, 8, 3]
-    neighbor_ids = jnp.clip(neighbor_ids, a_min=0, a_max=resolution-1)
-    xyzs = (pts[:,0,:] - neighbor_centers[:,0,:]) / voxel_len
-    if interpolation == 'tricubic':
-      pt_data = tricubic_interpolation(xyzs, neighbor_ids[:,0,:], grid, matrix, powers)
-      pt_sigma = pt_data[-1][:-1]
-      pt_sh = [d[:-1,:] for d in pt_data[:-1]]
-    elif interpolation == 'trilinear':
-      weights = trilinear_interpolation_weight(xyzs)  # [n_intersections, 8]
-      neighbor_data = grid_lookup(neighbor_ids[...,0], neighbor_ids[...,1], neighbor_ids[...,2], grid)
-      neighbor_sh = neighbor_data[:-1]
-      neighbor_sigma = neighbor_data[-1]
-      pt_sigma = jnp.sum(weights * neighbor_sigma, axis=1)[:-1]
-      pt_sh = [jnp.sum(weights[..., jnp.newaxis] * nsh, axis=1)[:-1,:] for nsh in neighbor_sh]
-    elif interpolation == 'constant':
-      voxel_ids = neighbor_ids[:,0,:]
-      voxel_data = jax.vmap(lambda voxel_id: grid_lookup(voxel_id[0], voxel_id[1], voxel_id[2], grid))(voxel_ids)
-      pt_sigma = voxel_data[-1][:-1]
-      pt_sh = [d[:-1,:] for d in voxel_data[:-1]]
+    grid = grid[-1]
+    pts = (pts + radius) * resolution / (2*radius)
+    pts = jnp.transpose(pts)
+
+    pt = jax.scipy.ndimage.map_coordinates(grid, pts, order= 1)
+    
+    if interpolation == 'trilinear':
+      pt_sh = []
+      pt_sigma = pt[:-1]
     else:
       print(f'Unrecognized interpolation method {interpolation}.')
       assert False
     return pt_sh, pt_sigma, intersections
-  else: # Only does trilinear with jitter
-    jitters = jax.random.normal(key=key, shape=(intersections.shape[0],)) * voxel_len * jitter
-    jittered_intersections = jnp.clip(intersections + jitters, a_min=intersections[0], a_max=intersections[-1])
-    jittered_pts = ray_o[jnp.newaxis, :] + jittered_intersections[:, jnp.newaxis] * ray_d[jnp.newaxis, :]  # [n_intersections, 3]
-    jittered_pts = jittered_pts[:, jnp.newaxis, :]  # [n_intersections, 1, 3]
-    offsets = jnp.array([[-1,-1,-1], [-1,-1,1], [-1,1,-1], [-1,1,1], [1,-1,-1], [1,-1,1], [1,1,-1], [1,1,1]]) * voxel_len / 2.0  # [8, 3]
-    neighbors = jnp.clip(jittered_pts + offsets[jnp.newaxis, :, :], a_min=-radius, a_max=radius)  # [n_intersections, 8, 3]
-    neighbor_centers = jnp.clip((jnp.floor(neighbors / voxel_len + eps) + 0.5) * voxel_len, a_min=-(radius - voxel_len/2), a_max=radius - voxel_len/2)  # [n_intersections, 8, 3]
-    neighbor_ids = jnp.array(jnp.floor(neighbor_centers / voxel_len + eps) + resolution / 2, dtype=int)  # [n_intersections, 8, 3]
-    neighbor_ids = jnp.clip(neighbor_ids, a_min=0, a_max=resolution-1)
-    xyzs = (jittered_pts[:,0,:] - neighbor_centers[:,0,:]) / voxel_len
-    weights = trilinear_interpolation_weight(xyzs)  # [n_intersections, 8]
-    neighbor_data = grid_lookup(neighbor_ids[...,0], neighbor_ids[...,1], neighbor_ids[...,2], grid)
-    neighbor_sh = neighbor_data[:-1]
-    neighbor_sigma = neighbor_data[-1]
-    pt_sigma = jnp.sum(weights * neighbor_sigma, axis=1)[:-1]
-    pt_sh = [jnp.sum(weights[..., jnp.newaxis] * nsh, axis=1)[:-1,:] for nsh in neighbor_sh]
-    idx = jnp.argsort(jittered_intersections)  # Should be nearly sorted already
-    return [sh[idx][:-1] for sh in pt_sh], pt_sigma[idx][:-1], jittered_intersections[idx]
 
 
 @jax.partial(jax.jit, static_argnums=(2,4,5,6,7,8,9))

@@ -13,9 +13,20 @@ import config
 import config2
 np.random.seed(0)
 
+# def get_freer_gpu():
+#     os.system('nvidia-smi -q -d Memory | grep Free >tmp')
+#     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+#     return np.argmax(memory_available)
+
+# gpu = get_freer_gpu()
+# os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+# print(f'gpu is {gpu}')
+
 def get_freer_gpu():
-    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+    os.system('nvidia-smi -q -d Memory | grep Free >tmp')
+    memory_available = [int(x.split()[2]) for i, x in enumerate(open('tmp', 'r').readlines()) if i % 2 == 0]
+    print(f"memory available = {memory_available}")
+    print(f"np.argmax() = {np.argmax(memory_available)}")
     return np.argmax(memory_available)
 
 gpu = get_freer_gpu()
@@ -23,6 +34,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 print(f'gpu is {gpu}')
 
 # Import jax only after setting the visible gpu
+
 import jax
 import jax.numpy as jnp
 import plenoxel
@@ -92,7 +104,7 @@ flags.add_argument(
 flags.add_argument(
     "--radius", # affects resolution
     type=float,
-    default=4.8, # 6 for jerry and spike and 1.3 for orgSegs #trying 7on tmux 2 with focus of 300
+    default=5, # 6 for jerry and spike and 1.3 for orgSegs #trying 7on tmux 2 with focus of 300
     help="Grid radius. 1.3 works well on most scenes, but ship requires 1.5"
 )
 flags.add_argument(
@@ -128,7 +140,7 @@ flags.add_argument(
 flags.add_argument(
     '--lr_sigma',
     type=float,
-    # default=0.001, #0.001 for orgSegs 
+    # default=0.001, #0.001 for orgSegs and jerry, but now trying 0.01 for jerry in tmux one
     default=0.001, # for jerry has to be less than 0.05, currently trying 0.005 in tmux 1 & 0.001 in tmux 3
     help='SGD step size for sigma. Default chooses automatically based on resolution.'
     )
@@ -450,7 +462,7 @@ def get_ct_jerry2(root, stage):
     all_gt = []
     # print('hi')
     print('LOAD DATA', root)
-    print('jerry w thw new jerry pojections and the newoffsets')
+    print('jerry w thw new jerry corrected pojections and the newoffsets')
     # filenames = glob.glob(os.path.join(os.path.join(root, 'projections'), '*.png'))  # only has 718 projections
     projection_matrices = np.genfromtxt(os.path.join('/data/datasets/jerry-cbct/', 'proj_mat.csv'), delimiter=',')  # [719, 12]
     for i in range(len(projection_matrices)-1): 
@@ -460,11 +472,11 @@ def get_ct_jerry2(root, stage):
         index = "{:04d}".format(i)
         # im_gt = imageio.imread(os.path.join('./jerry_gt', f'{index}_0001.png')).astype(np.float32) / 255.0
         # im_gt = imageio.imread(os.path.join('/data/datasets/jerry-cbct/projections', f'Source_Projections{index}.png')).astype(np.float32) / 255.0
-        im_gt = imageio.imread(os.path.join('/data/datasets/newJerryProj', f'NewJerryProj_{index}.png')).astype(np.float32) / 255.0
-
+        # im_gt = imageio.imread(os.path.join('/data/datasets/newJerryProj', f'NewJerryProj_{index}.png')).astype(np.float32) / 255.0
         # im_gt = imageio.imread(os.path.join('/data/sfk/plenoxel-ct/jerry_gt', f'{index}_0001.png')).astype(np.float32) / 255.0 #Jerry gt
         # im_gt = imageio.imread(os.path.join('/data/datasets/Corrected_Projections', f'Cor_Proj{index}.png')).astype(np.float32) / 255.0 # Corrected projections
         # corrected in tmux1, source in tmux2, jerry_gt in tmux3
+        im_gt = imageio.imread(os.path.join('/data/datasets/New_Corrected_Projections', f'New_Cor_Proj{index}.png')).astype(np.float32) / 255.0 # Corrected projections
 
 
 
@@ -508,8 +520,8 @@ def get_ct_jerry2(root, stage):
     # focal = 5  # cm maybe this one
     # focal = 100
     # focal = 2.85 / 0.024
-    # focal = 200
-    focal = 300
+    focal = 200
+    # focal = 74.3856
     # focal = 400
     all_gt = np.asarray(all_gt)
     # all_gt = all_gt[:,:,0]
@@ -789,6 +801,21 @@ def multi_lowpass(gt, resolution):
         clean_gt[i,...] = im
     return clean_gt
 
+def compute_tv(t):
+    # print("computing tv rn")
+    # t = jnp.asarray(t)
+    # print(f"t.shape is {t.shape}")
+    # print(f"t type is {type(t)}")
+
+    xdim, ydim, zdim = t.shape
+    # print(f"t[1:, :, :] = {t[1:, :, :].shape}")
+    # print(f"t[xdim-1, :, :] = {t[:-1, :, :].shape}")
+
+   
+    x_tv = jnp.abs(t[1:, :, :] - t[:-1, :, :]).mean()
+    y_tv = jnp.abs(t[:, 1:, :] - t[:, :-1, :]).mean()
+    z_tv = jnp.abs(t[:, :, 1:] - t[:, :, :-1]).mean()
+    return x_tv + y_tv + z_tv
 
 def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation, nv):
     rays = plenoxel.get_rays(H, W, focal, c2w)
@@ -796,17 +823,51 @@ def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degre
     mse = jnp.mean((rgb - lowpass(gt, resolution))**2)
     # indices, data = data_dict
     loss = mse + occupancy_penalty * jnp.mean(jax.nn.relu(data_dict[-1]))
+
+    # tv = compute_tv(data_dict)
+    # return loss + 0.1 * tv
     return loss
 
 # The plenotimize_static file has this added line to the top of this function, not sure if is necessary
 @jax.partial(jax.jit, static_argnums=(3,4,5,6,7,9,11,12))
 def get_loss_rays(data_dict, rays, gt, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation, nv):
+    
+    # data_dict = [jnp.array(d) for d in data_dict]  # Convert data_dict list to JAX array
+
     rgb, disp, acc, weights, voxel_ids = plenoxel.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation, nv)
     # The plenoptimize_static file has this next line a little bit different, for the "alpha" channel only ???
     # mse = jnp.mean((rgb - gt)**2)
     mse = jnp.mean((acc - gt[...,0])**2)# Optimize the alpha channel only
     # indices, data = data_dict
     loss = mse + occupancy_penalty * jnp.mean(jax.nn.relu(data_dict[-1]))
+
+    tv = compute_tv(data_dict[-1])
+    return loss + 0.5 * tv
+    # @ 0.1,   PSNR = 29.9224 w/ uncorrected images
+    # @ 0.01,  PSNR = 30.3231 w/ uncorrected images
+    # @ 0.001, PSNR = 29.6245 w/ uncorrected images
+
+    # @ 0.1,    PSNR = 28.6819 w/ corrected images
+    # @ 0.05,   PSNR = 27.9457 w/ corrected images
+    # @ 0.01,   PSNR = 27.9006 w/ corrected images
+    # @ 0.001,  PSNR = 27.0034 w/ corrected images
+    # @ 0.0001, PSNR = 26.0925 w/ corrected images
+
+    # @ 0.1,    PSNR = 29.3367 w/ corrected images and lr = 0.01 
+    # @ 0.01,   PSNR = 29.4156 w/ corrected images and lr = 0.01
+    # @ 0.001,  PSNR = 29.0886 w/ corrected images and lr = 0.01 
+    # @ 0.0001, PSNR = 28.6264 w/ corrected images and lr = 0.01
+
+    # @ 0.1,    PSNR = 29.6574 w/ corrected images and lr = 0.1 
+    # @ 0.01,   PSNR = 29.4928 w/ corrected images and lr = 0.1 
+    # @ 0.001,  PSNR = 28.8807 w/ corrected images and lr = 0.1 
+
+    # @ 0.1,    PSNR = 15.0389 w/ corrected images and lr = 0.0001 
+    # @ 0.01,   PSNR = 14.0932 w/ corrected images and lr = 0.0001 
+    # @ 0.001,  PSNR = 13.8055 w/ corrected images and lr = 0.0001 
+
+    # @ 0.5,    PSNR = 27.6756 w/ corrected images and lr = 0.001 in tmux 1
+
     return loss
 
 
@@ -857,7 +918,6 @@ def render_pose_rays(data_dict, c2w, H, W, focal, resolution, radius, harmonic_d
         rgbi = jnp.concatenate([acci[:,jnp.newaxis], jnp.zeros_like(acci)[:,jnp.newaxis], jnp.zeros_like(acci)[:,jnp.newaxis]], axis=-1)
         rgbs.append(rgbi)
         disps.append(dispi)
-
     
     rgb = jnp.reshape(jnp.concatenate(rgbs, axis=0), (H, W, 3))
     disp = jnp.reshape(jnp.concatenate(disps, axis=0), (H, W))
@@ -875,8 +935,8 @@ def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name
     for j, (c2w, gt) in tqdm(enumerate(zip(test_c2w, test_gt))):
 
         # skips tha images that arent shown // Added on to debug faster, should be taken away later
-        if FLAGS.render_interval > 0 and j % FLAGS.render_interval != 0:
-            continue
+        # if FLAGS.render_interval > 0 and j % FLAGS.render_interval != 0:
+        #     continue
 
         rgb, disp, _, _ = render_pose_rays(data_dict, c2w, H, W, focal, FLAGS.resolution, radius, FLAGS.harmonic_degree, FLAGS.jitter, FLAGS.uniform, key, sh_dim, FLAGS.physical_batch_size, FLAGS.interpolation, FLAGS.nv)
         # assert False
@@ -889,6 +949,10 @@ def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name
         rgb = jnp.concatenate((rgb[...,0,jnp.newaxis], rgb[...,0,jnp.newaxis], rgb[...,0,jnp.newaxis]), axis=-1)
         gt = jnp.concatenate((gt[...,jnp.newaxis], gt[...,jnp.newaxis], gt[...,jnp.newaxis]), axis=-1)
         
+
+        # from skimage.restoration import denoise_tv_chambolle
+        # denoise_rgb = denoise_tv_chambolle((rgb*255).astype(np.uint8), weight=0.1, eps=0.0002, max_num_iter=200, channel_axis=None)
+
         # From pleoptimize_static-----------
         # gt = jnp.concatenate((gt[...,0,jnp.newaxis], gt[...,0,jnp.newaxis], gt[...,0,jnp.newaxis]), axis=-1)
         # ---------------------------------
@@ -915,7 +979,11 @@ def run_test_step(i, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, key, name
             # vis = np.asarray((vis * 255)).astype(np.uint8)
             # imageio.imwrite(f"{log_dir}/{j:04}_{i:04}{name_appendage}.png", vis)
             # print(f'gt ranges from {jnp.min(gt)} to {jnp.max(gt)} and prediction ranges from {jnp.min(rgb)} to {jnp.max(rgb)} and disp ranges from {jnp.min(disp)} to {jnp.max(disp)}')
+            
+
+            
             vis = jnp.concatenate((gt, rgb), axis = 1)
+
 # ***************************************************************************************************************************************************************************************************************
             # vis = rbg for new file
             # vis = rgb
@@ -1074,9 +1142,9 @@ def main():
 
         else:
             occupancy_penalty = FLAGS.occupancy_penalty / (len(rays_rgb) // FLAGS.logical_batch_size)
-            # for k in tqdm(range(len(rays_rgb) // FLAGS.logical_batch_size)):
+            for k in tqdm(range(len(rays_rgb) // FLAGS.logical_batch_size)):
             # for k in tqdm(range(10000)):
-            for k in tqdm(range(100)):
+            # for k in tqdm(range(100)):
                 logical_grad = None
                 for j in range(FLAGS.logical_batch_size // FLAGS.physical_batch_size):
                     if FLAGS.jitter > 0:
