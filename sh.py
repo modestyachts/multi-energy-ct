@@ -26,6 +26,7 @@
 
 import jax.numpy as jnp
 import jax
+from functools import partial
 
 C0 = 0.28209479177387814
 C1 = 0.4886025119029199
@@ -57,7 +58,7 @@ C4 = [
     0.6258357354491761,
 ]
 
-@jax.partial(jax.jit, static_argnums=(0,))
+@partial(jax.jit, static_argnums=(0,))
 def eval_sh(deg, sh, dirs):
     """
     Evaluate spherical harmonics at unit directions

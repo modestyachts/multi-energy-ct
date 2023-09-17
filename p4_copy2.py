@@ -12,33 +12,21 @@ import time
 import config as config
 import config2 as config2
 import math
-import numpy.matlib
 import tifffile
 np.random.seed(0)
 
-# def get_freer_gpu():
-#     os.system('nvidia-smi -q -d Memory | grep Free >tmp')
-#     memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
-#     return np.argmax(memory_available)
-
-# gpu = get_freer_gpu()
-# os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-# print(f'gpu is {gpu}')
-
 def get_freer_gpu():
     os.system('nvidia-smi -q -d Memory | grep Free >tmp')
-    memory_available = [int(x.split()[2]) for i, x in enumerate(open('tmp', 'r').readlines()) if i % 2 == 0]
+    memory_available = [int(x.split()[2]) for i, x in enumerate(open('tmp', 'r').readlines()) if i % 3 == 0]
     print(f"memory available = {memory_available}")
     print(f"np.argmax() = {np.argmax(memory_available)}")
     return np.argmax(memory_available)
 
 gpu = get_freer_gpu()
-# gpu = 0
 os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 print(f'gpu is {gpu}')
 
 # Import jax only after setting the visible gpu
-
 import jax
 print(f"jax devices is {jax.devices()}")
 import jax.numpy as jnp
@@ -93,7 +81,7 @@ flags.add_argument(
 flags.add_argument(
     "--resolution",
     type=int,
-    default=900,
+    default=50, #900,  # 50 is for synthetic ct dataset
     help="Grid size."
 )
 flags.add_argument(
@@ -111,7 +99,7 @@ flags.add_argument(
 flags.add_argument(
     "--radius", # affects resolution
     type=float,
-    default=9, # 6 for jerry and spike and 1.3 for orgSegs #trying 7on tmux 2 with focus of 300
+    default=5, #9, # 6 for jerry and spike and 1.3 for orgSegs  # 5 is for synthetic ct dataset
     help="Grid radius. 1.3 works well on most scenes, but ship requires 1.5"
 )
 flags.add_argument(
