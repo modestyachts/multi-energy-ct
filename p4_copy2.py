@@ -45,7 +45,8 @@ flags = ArgumentParser()
 flags.add_argument(
     "--data_dir", '-d',
     type=str,
-    default='/data/datasets/', #for corrected projections and spike
+    # default='/data/datasets/', #for corrected projections and spike
+    default='/home/datasets/',
     # default = '/data/fabriziov/ct_scans/organSegs/', #for orgsegs
     help="Dataset directory e.g. ct_scans/"
 )
@@ -58,7 +59,9 @@ flags.add_argument(
     # default = "jerry_gt_img", # for jerry_gt (fake projections)
     # default = "newjerry2",
     # default = 'spike_img', #in tmux 1
-    default = 'fullradius9_test_spike_tiff_res900_epoch1_tv0.001_nonneg_views720',
+    # default = 'fullradius9_test_spike_tiff_res900_epoch1_tv0.001_nonneg_views720',
+    # default = 'semi_easy_synthetic_nonnegative',
+    default = 'shepp_fifthdensity/nonlinear_1_nonnegative',
     # default = 'test_jerry_tiff_res64_epoch4_split2_tv0.001_nonneg',
     # default = 'organSegs_img1', # For organ Segmentations dataset
     help="Experiment name."
@@ -68,9 +71,10 @@ flags.add_argument(
     type=str,
     # default='Corrected_Projections/', #for jerry corrected projections
     # default='scans/', # For organ Segmentations 
-    default='spike-cbct/', # For Spike
+    # default='spike-cbct/', # For Spike
+    default='ct_shepp',
     # default = 'scans/', #for jerry
-    help="Name of the synthetic scene."
+    help="Name of the scene."
 )
 flags.add_argument(
     "--log_dir",
@@ -81,7 +85,7 @@ flags.add_argument(
 flags.add_argument(
     "--resolution",
     type=int,
-    default=50, #900,  # 50 is for synthetic ct dataset
+    default=128, #900 for spike
     help="Grid size."
 )
 flags.add_argument(
@@ -142,13 +146,13 @@ flags.add_argument(
 flags.add_argument(
     '--physical_batch_size',
     type=int,
-    default=2000,
+    default=3000,
     help='Number of rays per batch, to avoid OOM.'
     )
 flags.add_argument(
     '--logical_batch_size',
     type=int,
-    default=2000,
+    default=3000,
     help='Number of rays per optimization batch. Must be a multiple of physical_batch_size.'
     )
 flags.add_argument(
@@ -228,6 +232,11 @@ flags.add_argument(
     action='store_true',
     help='Clip stored grid values to be nonnegative. Intended for ct.'
 )
+# flags.add_argument(
+#     '--linear',
+#     action='store_true',
+#     help='Use a linear version of the forward model. Intended for ct.'
+# )
 flags.add_argument(
     '--num_views',
     type=int,
@@ -687,6 +696,110 @@ def get_ct_spike2(root, stage, max_projections, xoff, yoff, zoff):
     return focal, all_w2c,all_gt
     # assert FLAGS.ct
 
+def get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff):
+    all_w2c = []
+    all_gt = []
+
+    print('LOAD DATA', root)
+    
+    # Use the same projection matrices as Spike
+    projection_matrices = np.genfromtxt(os.path.join('/home/fabriz/data/spike/', 'proj_mat_720frames.csv'), delimiter=',')  # [719, 12] /home/fabriz/data/spike/proj_mat_720frames.csv
+
+    #Traslation matrix along x,y,z
+    Tz = np.zeros((4,4))
+    Tz[0,0]=1.0
+    Tz[1,1]=1.0
+    Tz[2,2]=1.0
+    Tz[3,3]=1.0
+    Tz[0,3]=-xoff #test
+    Tz[1,3]=-yoff #test
+    Tz[2,3]=-zoff #test
+
+    # tif_proj = tifffile.imread(os.path.join(root, 'synthetic0.2_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
+    tif_proj = tifffile.imread(os.path.join(root, 'fifthdensity_1_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
+
+    # reads #max_projections projection images
+    for i in range(len(projection_matrices)): 
+        im_gt = tif_proj[i,:,:]
+
+        # For linear baseline experiment
+        # im_gt = -1*np.log(1 - im_gt)
+
+        # projection matrices P_(3,4)
+        w2c = np.reshape(projection_matrices[i], (3,4))
+        w2c = np.matmul(w2c,Tz) #applico una traslazione per centrate il volume
+        
+        all_w2c.append(w2c)
+        all_gt.append(im_gt)
+
+    all_gt = np.asarray(all_gt)
+    all_w2c = np.asarray(all_w2c)
+
+    focal = 100 
+
+    return focal, all_w2c,all_gt
+
+def get_ct_synthetic(root, stage, max_projections, xoff, yoff, zoff):
+    all_w2c = []
+    all_gt = []
+
+    print('LOAD DATA', root)
+    
+    # Use the same projection matrices as Spike
+    projection_matrices = np.genfromtxt(os.path.join('/home/fabriz/data/spike/', 'proj_mat_720frames.csv'), delimiter=',')  # [719, 12] /home/fabriz/data/spike/proj_mat_720frames.csv
+
+    #Traslation matrix along x,y,z
+    Tz = np.zeros((4,4))
+    Tz[0,0]=1.0
+    Tz[1,1]=1.0
+    Tz[2,2]=1.0
+    Tz[3,3]=1.0
+    Tz[0,3]=-xoff #test
+    Tz[1,3]=-yoff #test
+    Tz[2,3]=-zoff #test
+
+    # tif_proj = tifffile.imread(os.path.join(root, 'synthetic_projections_raw_radius5_reso50_H700.tif'))
+    # tif_proj = tifffile.imread(os.path.join(root, 'easy_synthetic_projections_raw_radius5_reso50_H700.tif'))
+    tif_proj = tifffile.imread(os.path.join(root, 'semi_easy_synthetic_projections_raw_radius5_reso50_H700.tif'))
+    # tif_proj = tifffile.imread(os.path.join(root, 'very_easy_synthetic_projections_raw_radius5_reso50_H700.tif'))
+    # tif_proj = tifffile.imread(os.path.join(root, 'super_easy_synthetic_projections_raw_radius5_reso50_H700.tif'))
+
+    # reads #max_projections projection images
+    for i in range(len(projection_matrices)): 
+        im_gt = tif_proj[i,:,:]
+
+        # im_gt = 1 - im_gt # Not necessary for the synthetic dataset
+        # For linear baseline experiment
+        # im_gt = -1*np.log(1 - im_gt)
+
+        # projection matrices P_(3,4)
+        w2c = np.reshape(projection_matrices[i], (3,4))
+        w2c = np.matmul(w2c,Tz) #applico una traslazione per centrate il volume
+        
+        all_w2c.append(w2c)
+        all_gt.append(im_gt)
+
+    all_gt = np.asarray(all_gt)
+    all_w2c = np.asarray(all_w2c)
+
+    focal = 100 
+    
+    # mask = np.zeros(len(all_w2c))
+    # # print(f'max is {len(all_w2c)}')
+    # idx = np.random.choice(len(all_w2c), max_projections, replace = False) # Just look at a subset of projections, to save time/memory for debuggin
+    # mask[idx] = 1
+    # mask = mask.astype(bool)
+
+    # # train and test can be commented out to get the full 360 ground truth projections
+    # if stage == 'train':
+    #     all_gt = all_gt[mask]
+    #     all_w2c = all_w2c[mask]
+    # elif stage == 'test':
+    #     all_gt  = all_gt[~mask]
+    #     all_w2c = all_w2c[~mask]
+
+    return focal, all_w2c,all_gt
+
 # This function takesn in the given root and uses the appropriate
 #   data loader to get the focal, c2w, and gt
 def get_data(root, stage):
@@ -731,6 +844,12 @@ def get_data(root, stage):
     elif root == '/data/datasets/spike-cbct/':
         focal, all_c2w, all_gt = get_ct_spike2(root, stage, max_projections, xoff, yoff, zoff)  
         # idx = np.random.choice(len(all_c2w), FLAGS.num_views) # Pick a subset of the data at random
+        return focal, all_c2w, all_gt
+    elif 'ct_synthetic' in root:
+        focal, all_c2w, all_gt = get_ct_synthetic(root, stage, max_projections, xoff, yoff, zoff)
+        return focal, all_c2w, all_gt
+    elif 'ct_shepp' in root:
+        focal, all_c2w, all_gt = get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff)
         return focal, all_c2w, all_gt
 
     # elif root == '/data/datasets/spike-cbct/':
@@ -781,6 +900,11 @@ if __name__ == "__main__":
     dH = 0.024
     n_train_imgs = len(train_c2w)
     n_test_imgs = len(test_c2w)
+    if 'shepp' in FLAGS.expname:
+        H = 140
+        W = 128
+        dH = 0.12
+        dW = 0.12
 
 # Sets the new log_dirs to be the exsiting log_dir plus the experiment name
 #   makes the neccessary directories for it if they don't exist.
@@ -855,6 +979,7 @@ def compute_tv(t):
 
 def get_loss(data_dict, c2w, gt, H, W, focal, resolution, radius, harmonic_degree, jitter, uniform, key, sh_dim, occupancy_penalty, interpolation, nv):
     rays = plenoxel_og_copy2.get_rays(H, W, focal, c2w)
+    # rays = get_rays_np(H, W, dH, dW, w2c)  # I think we should be using this version with jerry/spike/synthetic. But it only matters if physical_batch_size is None
     rgb, disp, acc, weights, voxel_ids = plenoxel_og_copy2.render_rays(data_dict, rays, resolution, key, radius, harmonic_degree, jitter, uniform, interpolation, nv)
     mse = jnp.mean((rgb - lowpass(gt, resolution))**2)
     indices, data = data_dict
