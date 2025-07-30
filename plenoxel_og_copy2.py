@@ -1,4 +1,4 @@
-#  THIS VERSION ALLOWS SPLITTING BUT NOT SPARCITY 
+#  THIS VERSION ALLOWS SPLITTING BUT NOT SPARSITY 
 #  SO THERE IS A SINGLE DATA ARRAY NO INDEX 
 
 import jax
@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 
 # Based on https://github.com/google-research/google-research/blob/d0a9b1dad5c760a9cfab2a7e5e487be00886803c/jaxnerf/nerf/model_utils.py#L166
-def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=False):
+def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=False, linear=False):
   """Volumetric Rendering Function.
   Args:
     rgb: jnp.ndarray(float32), color, [batch_size, num_samples, 3]
@@ -33,8 +33,10 @@ def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd=False):
   dists = dists * jnp.linalg.norm(dirs[Ellipsis, None, :], axis=-1)  # Convert ray-relative distance to absolute distance (shouldn't matter if rays_d is normalized)
   # Note that we're quietly turning sigma from [..., 0] to [...].
 
-  alpha = 1.0 - jnp.exp(-jax.nn.relu(sigma) * dists)  # What fraction of light gets stuck in each voxel
-  # alpha = jax.nn.relu(sigma) * dists # The linear version of the problem TODO: try getting rid of the relu here and see what happens (since technically it's nonlinear)
+  if linear:
+    alpha = jax.nn.relu(sigma) * dists # The linear version of the problem TODO: try getting rid of the relu here and see what happens (since technically it's nonlinear)
+  else:
+    alpha = 1.0 - jnp.exp(-jax.nn.relu(sigma) * dists)  # What fraction of light gets stuck in each voxel
   
   # alpha = sigma * dists
   # weights = alpha
@@ -471,7 +473,7 @@ def values_oneray(intersections, grid, ray_o, ray_d, resolution, key, sh_dim, ra
 
 
 @partial(jax.jit, static_argnums=(2,4,5,6,7,8,9))
-def render_rays(grid, rays, resolution, keys, radius=1.3, harmonic_degree=0, jitter=0, uniform=0, interpolation='trilinear', nv=False):
+def render_rays(grid, rays, resolution, keys, radius=1.3, harmonic_degree=0, jitter=0, uniform=0, interpolation='trilinear', nv=False, linear=False):
   sh_dim = (harmonic_degree + 1)**2
   voxel_len = radius * 2.0 / resolution
   assert (resolution // 2) * 2 == resolution # Renderer assumes resolution is a multiple of 2
@@ -508,7 +510,7 @@ def render_rays(grid, rays, resolution, keys, radius=1.3, harmonic_degree=0, jit
   if nv:
     rgb, disp, acc, weights = nv_rendering(voxel_rgb, voxel_sigma, intersections, rays_d)
   else:
-    rgb, disp, acc, weights = volumetric_rendering(voxel_rgb, voxel_sigma, intersections, rays_d)
+    rgb, disp, acc, weights = volumetric_rendering(voxel_rgb, voxel_sigma, intersections, rays_d, linear=linear)
   pts = rays_o[:, jnp.newaxis, :] + intersections[:, :, jnp.newaxis] * rays_d[:, jnp.newaxis, :]  # [n_rays, n_intersections, 3]
   ids = jnp.clip(jnp.array(jnp.floor(pts / voxel_len + eps) + resolution / 2, dtype=int), a_min=0, a_max=resolution-1)
   return rgb, disp, acc, weights, ids
