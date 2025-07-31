@@ -61,7 +61,8 @@ flags.add_argument(
     # default = 'spike_img', #in tmux 1
     # default = 'fullradius9_test_spike_tiff_res900_epoch1_tv0.001_nonneg_views720',
     # default = 'semi_easy_synthetic_nonnegative',
-    default = 'shepp_fifthdensity/',
+    # default = 'shepp_fifthdensity/',
+    default = 'shepp_varynorm/',
     # default = 'test_jerry_tiff_res64_epoch4_split2_tv0.001_nonneg',
     # default = 'organSegs_img1', # For organ Segmentations dataset
     help="Experiment name."
@@ -70,7 +71,13 @@ flags.add_argument(
     "--density",
     type=float,
     default=1.0,
-    help='Relative density scaling of the shepp phantom. Options in the paper are 0.05, 0.2, 1'
+    help='Relative density scaling of the inner ellipsoid in the shepp phantom. Options in the paper are 0.05, 0.2, 1'
+)
+flags.add_argument(
+    "--norm",
+    type=float,
+    default=0,
+    help='Norm of the ground truth volume. 0 means use the original Shepp_fifthdensity volume, which has norm about 60. Other options are 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000.'
 )
 flags.add_argument(
     "--noise",
@@ -128,12 +135,12 @@ flags.add_argument(
     '--num_epochs',
     type=int,
     default=1,
-    help='Epochs to train for.'
+    help='Epochs to train for. If 0, will train until convergence based on gradient norm (up to a max of 720/num_views epochs).'
 )
 flags.add_argument(
     '--render_interval',
     type=int,
-    default = 30, #change to 1 to get the projection images 
+    default = 100, #change to 1 to get the projection images 
     help='Render images during test/val step every x images.'
 )
 flags.add_argument(
@@ -234,11 +241,11 @@ flags.add_argument(
     action='store_true',
     help='Use the Neural Volumes rendering formula instead of the Max (NeRF) rendering formula.'
 )
-flags.add_argument(
-    '--ct',
-    action='store_true',
-    help='Optimize sigma only, based on the gt alpha channel.'
-)
+# flags.add_argument(  # This is now the default so we don't need a flag for it
+#     '--ct',
+#     action='store_true',
+#     help='Optimize sigma only, based on the gt alpha channel.'
+# )
 flags.add_argument(
     '--nonnegative',
     action='store_true',
@@ -252,8 +259,8 @@ flags.add_argument(
 flags.add_argument(
     '--num_views',
     type=int,
-    default=20,
-    help='Number of CT projections to train with. Only used with Jerry-CBCT.'
+    default=0,
+    help='Number of CT projections to train with. 0 means use all available projections.'
 )
 flags.add_argument(
     '--cut_cube',
@@ -268,8 +275,17 @@ np.random.seed(0)
 
 FLAGS.expname = FLAGS.expname + 'nonlinear' if not FLAGS.linear else FLAGS.expname + 'linear'
 FLAGS.expname = FLAGS.expname + '_' + str(FLAGS.density)
+FLAGS.expname = FLAGS.expname + '_norm' + str(FLAGS.norm) if FLAGS.norm > 0 else FLAGS.expname
 FLAGS.expname = FLAGS.expname + '_noise' + str(FLAGS.noise)
 FLAGS.expname = FLAGS.expname + '_nonnegative' if FLAGS.nonnegative else FLAGS.expname
+FLAGS.expname = FLAGS.expname + f'_{FLAGS.num_views}views' if FLAGS.num_views > 0 else FLAGS.expname
+
+if FLAGS.num_epochs == 0:
+    FLAGS.expname = FLAGS.expname + '_until_convergence'
+    global until_convergence
+    until_convergence = True
+    FLAGS.num_epochs = (720 * 2) // FLAGS.num_views if FLAGS.num_views > 0 else 2  # maximum number of epochs to train for, though we will stop early if gradient is small enough
+    print(f'training until convergence or for a maximum of {FLAGS.num_epochs} epochs')
 
 # This is where I would call for a function or a seperate file that would be able to make a projection matrix for the new datasets
 #   the plenoptimize_static file has a def get_jerry(root) function that reads the projection numbers from a csv file.
@@ -717,7 +733,7 @@ def get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff):
     all_w2c = []
     all_gt = []
 
-    print('LOAD DATA', root)
+    # print('LOAD DATA', root)
     
     # Use the same projection matrices as Spike
     projection_matrices = np.genfromtxt(os.path.join('/data/datasets/spike/', 'proj_mat_720frames.csv'), delimiter=',')  # [719, 12] /home/fabriz/data/spike/proj_mat_720frames.csv
@@ -733,7 +749,10 @@ def get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff):
     Tz[2,3]=-zoff #test
 
     # tif_proj = tifffile.imread(os.path.join(root, 'synthetic0.2_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
-    tif_proj = tifffile.imread(os.path.join(root, f'fifthdensity_{FLAGS.density}_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
+    if FLAGS.norm > 0:
+        tif_proj = tifffile.imread(os.path.join(root, f'varynorm/norm_{FLAGS.norm}_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
+    else:
+        tif_proj = tifffile.imread(os.path.join(root, f'fifthdensity_{FLAGS.density}_projections_raw_radius5_reso128_H140_W128_dhw0.12.tif'))
 
     # reads #max_projections projection images
     for i in range(len(projection_matrices)): 
@@ -760,7 +779,7 @@ def get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff):
 
     focal = 100 
 
-    return focal, all_w2c,all_gt
+    return focal, all_w2c, all_gt
 
 def get_ct_synthetic(root, stage, max_projections, xoff, yoff, zoff):
     all_w2c = []
@@ -873,6 +892,12 @@ def get_data(root, stage):
         return focal, all_c2w, all_gt
     elif 'ct_shepp' in root:
         focal, all_c2w, all_gt = get_ct_shepp(root, stage, max_projections, xoff, yoff, zoff)
+        # Filter to train with a subset of the projections
+        if FLAGS.num_views > 0:
+            # print(f'Using {FLAGS.num_views} views for training')
+            np.random.seed(0)  # For reproducibility
+            idx = np.random.choice(len(all_c2w), FLAGS.num_views) # Pick a subset of the data at random
+            return focal, all_c2w[idx], all_gt[idx]
         return focal, all_c2w, all_gt
 
     # elif root == '/data/datasets/spike-cbct/':
@@ -952,7 +977,7 @@ if FLAGS.reload_epoch is not None:
     data_dict = plenoxel_og_copy2.load_grid(dirname=reload_dir, sh_dim = (FLAGS.harmonic_degree + 1)**2)
     # import pdb; pdb.set_trace()
 else:
-    print(f'Initializing the grid')
+    # print(f'Initializing the grid')
     data_dict = plenoxel_og_copy2.initialize_grid(resolution=FLAGS.resolution, ini_rgb=FLAGS.ini_rgb, ini_sigma=FLAGS.ini_sigma, harmonic_degree=FLAGS.harmonic_degree)
 
 # low-pass filter the ground truth image so the effective resolution matches twice that of the grid
@@ -1239,7 +1264,7 @@ if FLAGS.physical_batch_size is not None:
         print(f'reloading saved rays')
         rays_rgb = np.load('rays.npy')
     else:
-        print(f'precomputing all the training rays')
+        # print(f'precomputing all the training rays')
         # Precompute all the training rays and shuffle them
         t0 = time.time()
         # print("hi")
@@ -1248,7 +1273,7 @@ if FLAGS.physical_batch_size is not None:
         rays = np.stack([get_rays_np(H, W, dH, dW, p) for p in train_c2w[:,:3,:4]], 0) # [N, ro+rd, H, W, 3]  # 42 seconds
         
         t1 = time.time()
-        print(f'stack took {t1 - t0} seconds')
+        # print(f'stack took {t1 - t0} seconds')
         # print(f'train_c2w has shape {train_c2w.shape}')
         # print(f'train_gt has shape {train_gt.shape}')
 
@@ -1262,15 +1287,15 @@ if FLAGS.physical_batch_size is not None:
         rays_rgb = np.concatenate([rays, multi_lowpass(train_gt[:,None], FLAGS.resolution).astype(np.float32)], 1)  # [N, ro+rd+rgb, H, W, 3]  # 19 seconds
         t2 = time.time()
         
-        print(f'concatenate took {t2 - t1} seconds')
+        # print(f'concatenate took {t2 - t1} seconds')
         rays_rgb = np.transpose(rays_rgb, [0,2,3,1,4]) # [N, H, W, ro+rd+rgb, 3] 
         t3 = time.time()
-        print(f'transpose took {t3 - t2} seconds')
+        # print(f'transpose took {t3 - t2} seconds')
         rays_rgb = np.reshape(rays_rgb, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]  # 12 seconds
         t4 = time.time()
-        print(f'reshape took {t4 - t3} seconds')
+        # print(f'reshape took {t4 - t3} seconds')
         rays_rgb = rays_rgb.take(np.random.permutation(rays_rgb.shape[0]), axis=0)  # 34 seconds
-        print(f'permutation took {time.time() - t4} seconds')
+        # print(f'permutation took {time.time() - t4} seconds')
         # np.save('rays.npy', rays_rgb)
 
 
@@ -1297,7 +1322,7 @@ def rmsprop_update(avg_g, data_grad):
 
 
 def main():
-    global rays_rgb, keys, render_keys, data_dict, FLAGS, radius, train_c2w, train_gt, test_c2w, test_gt, automatic_lr
+    global rays_rgb, keys, render_keys, data_dict, FLAGS, radius, train_c2w, train_gt, test_c2w, test_gt, automatic_lr, until_convergence
     start_epoch = 0
     sh_dim = (FLAGS.harmonic_degree + 1)**2
     if FLAGS.reload_epoch is not None:
@@ -1327,6 +1352,10 @@ def main():
             assert FLAGS.logical_batch_size % FLAGS.physical_batch_size == 0
             # Shuffle rays over all training images
             rays_rgb = rays_rgb.take(np.random.permutation(rays_rgb.shape[0]), axis=0)
+
+            # print(f'train_c2w has shape {train_c2w.shape}')
+            # print(f'train_gt has shape {train_gt.shape}')
+            # print(f'rays_rgb has shape {rays_rgb.shape}')
 
         # print('epoch', i)
         pb = tqdm(total=len(test_c2w), desc = f"Epoch {i}")
@@ -1401,8 +1430,6 @@ def main():
                     # data = update_grid(data[-1], lrs, data_grad) 
                     del data_grad, logical_grad
 
-
-
         # -------------------------------This part is needed for split epochs -----------------------------------
         # data_dict = data
         # del indices, data
@@ -1455,6 +1482,14 @@ def main():
         if i % FLAGS.save_interval == FLAGS.save_interval - 1 or i == FLAGS.num_epochs - 1:
             print(f'Saving checkpoint at epoch {i}')
             plenoxel_og_copy2.save_grid(data_dict, os.path.join(log_dir, f'epoch_{i}'))
+
+        # check for convergence based on avg_g; can stop early if converged
+        if until_convergence:
+            if jnp.linalg.norm(avg_g[-1]) < 1e-10:
+                print(f'Converged at epoch {i}, avg grad norm = {jnp.linalg.norm(avg_g[-1])}')
+                break
+            # else:
+            #     print(f'avg grad norm = {jnp.linalg.norm(avg_g[-1])}')
 
         if i % FLAGS.val_interval == FLAGS.val_interval - 1 or i == FLAGS.num_epochs - 1:
             validation_psnr = run_test_step(i + 1, data_dict, test_c2w, test_gt, H, W, focal, FLAGS, render_keys)
