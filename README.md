@@ -1,36 +1,16 @@
-# Plenoxels: Radiance Fields without Neural Networks
-Alex Yu\*, Sara Fridovich-Keil\*, Matthew Tancik, Qinhong Chen, Benjamin Recht, Angjoo Kanazawa
+# Gradient Descent Provably Solves Nonlinear Tomographic Reconstruction
 
-UC Berkeley
+Sara Fridovich-Keil, Fabrizio Valdivia, Gordon Wetzstein, Benjamin Recht, Mahdi Soltanolkotabi
 
-Website and video: <https://alexyu.net/plenoxels>
+arXiv: <https://arxiv.org/abs/2310.03956>
 
-arXiv: <https://arxiv.org/abs/2112.05131>
+Accepted for publication in IEEE Transactions on Information Theory
 
-**Note:** This JAX implementation is intended to be high-level and user-serviceable, but is much slower (roughly 1 hour per epoch) than the CUDA implementation <https://github.com/sxyu/svox2> (roughly 1 minute per epoch), and there is not perfect feature alignment between the two versions. This JAX version can likely be sped up significantly, and we may push performance improvements and extra features in the future. Currently, this version only supports bounded scenes and trains using SGD without regularization.
-
-
-
-## Citation
-```
-@inproceedings{yu_and_fridovichkeil2021plenoxels,
-      title={Plenoxels: Radiance Fields without Neural Networks},
-      author={{Sara Fridovich-Keil and Alex Yu} and Matthew Tancik and Qinhong Chen and Benjamin Recht and Angjoo Kanazawa},
-      year={2022},
-      booktitle={CVPR},
-}
-```
-Note: joint first-authorship is not really supported in BibTex; you may need to modify the above if not using CVPR's format.
+This repo is built on a fork from the JAX version of Plenoxels: Radiance Fields without Neural Networks, with modification to support X-ray cone beam computed tomography (CBCT) and compare linear vs nonlinear reconstruction methods. 
 
 ## Setup
 
 We recommend setup with a conda environment, using the packages provided in `requirements.txt`.
-
-## Downloading data
-
-Currently, this implementation only supports NeRF-Blender, which is available at:
-
-<https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1>
 
 ## Voxel Optimization (aka Training)
 
